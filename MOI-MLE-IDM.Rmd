@@ -1,0 +1,870 @@
+---
+title: "Description of R file \"MOI-MLE-IDM.R\""
+author: "Meraj Hashemi, Kristan Schneider"
+output:
+  pdf_document: 
+    keep_tex: yes
+header-includes:
+- \usepackage{caption}
+- \usepackage{multirow}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(tinytex)
+
+options( tinytex.verbose = TRUE)
+
+#library('openxlsx')
+#library('ggplot2')
+#library('stringr')
+#library('Rmpfr')
+
+
+
+DatImp <- function(path){
+  if(substring(path,nchar(path)-3,nchar(path))==".xls"){
+    dat <- openxlsx::read.xlsx(path,1)
+  }
+  else{
+    if(substring(path,nchar(path)-4,nchar(path))==".xlsx"){
+      dat <- openxlsx::read.xlsx(path,1)
+    }
+    else{
+      if(substring(path,nchar(path)-3,nchar(path))==".txt"){
+        dat <- read.table(path,header=TRUE, sep="\t")
+      }
+      else{
+        if(substring(path,nchar(path)-3,nchar(path))==".csv"){
+          dat <- read.csv(path,header=TRUE,sep=";")
+        }
+      }
+    }  
+  }
+  dat
+}  
+
+#************************************************************************************
+#This function calculate Nk
+#************************************************************************************    
+
+Nk <- function(dat){
+  for(k in 1:nrow(dat)){
+    if(dat[k,1]==""||is.na(dat[k,1])){
+      dat[k,1] <- dat[k-1,1]
+    }
+  }
+  N <- length(unique(dat[,1]))
+  dat <- dat[!is.na(dat[,2]),]
+  Nplus <- length(unique(dat[,1]))
+  Nknum <- length(unique(dat[,2]))
+  dat <- dat[!duplicated(dat),]
+  out <- list(N,t(as.matrix(table(dat[,2]))),N-Nplus)
+  names(out) <- c("N","N_k","n_0")
+  out
+}
+
+########################################################################################
+#------------------------- Functions for calculating the MLEs---------------------------
+########################################################################################
+
+#' Funktion to derive MLE for the IDM or OM
+#'
+#' @param N integer-valued float; Sample size
+#' @param n_0 integer-valued float; number of empty records
+#' @param N_k float vector integer valued;each component corresponds to the number of
+#'   times a lineage is found in the dataset
+#' @param lambda_initial float; initial value of lambda for numerical algorithm, it should only be adjusted if there is prior 
+#'  information on the the value of lambda or if numerical problems occur
+#' @param eps_initial float; initial value of epsilon (probability of the
+#'   lineages remain undetected) used by the numerical algorithm.  It should only be adjusted if there is prior 
+#'  information on the the value of lambda or if numerical problems occur.
+#'
+#' @return the function returns a list of values as follows:
+#'         1) the MLE of the probability of lineages remaining undetected (epsilon) - this output is omitted if option model="OM" is specified;
+#'         2) the MLE of the MOI parameter (lambda);
+#'         3) the MLE of the average MOI (psi);
+#'         4) the MLE of the lineage frequencies;
+#'         5) the inverse Fisher information (estimates for the parameter epsilon are omitted if option model="OM" is specified).
+#'
+#' @examples MLE_IDM(40, 1, c(23,27), 1, 0.1)
+MLE <- function(N, N_k, n_0=0, model = "IDM", lambda_initial = 1, eps_initial=0.1){
+  eps <- 1e-12
+  n <- length(N_k)
+  if(!is.numeric(N)){
+    warning("Argument N must be an interge valued float")
+  }else if(!is.numeric(N_k)){
+    warning("Argument N_k must be an interge valued float vector")
+  }else if(!is.numeric(n_0)){
+    warning("Argument n_0 must be an interge valued float")
+  }else{
+    N1 <- floor(N)
+    N_k1 <- floor(N_k)
+    n_01 <- floor(n_0)
+    if(N-N1>eps){
+      warning(paste("Argument N must be an interge valued float, it was changed to N=", N1,sep=""))
+      N <- N1
+    }else if(sum(N_k-N_k1)>eps){
+      warning(paste("2- Argument N_k must be an interge valued float, it was changed to N_k=", N_k1,sep=""))
+      N_k <- N_k1
+    }else if(n_0 - n_01 >eps){
+      warning(paste("Argument n_0 must be an interge valued float, it was changed to n_0=", n_01,sep=""))
+      n_0 <- n_01
+    }
+    if(n_0 <0 || min(N_k)< 0 || N<0 || min(N-N_k)<0 || n_0>min(N-N_k) || (sum(N_k) <(N -n_0) && is.element(model,c("OM"))) || (sum(N_k) + n_0 <N  )){
+      warning("The data does not satisfiy the requirements, N, N_k, n_0 must be natural numbers, max(N_k)<N, and n_0 <= min(N-N_k), n_0+N1,+ .. + N_n >= N")
+    }else{
+      if(n==1){
+        final <- list(n_0/N,NA,NA,1,NA,NA)
+        names(final) <- c("probability of lineages remain undetected", "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+        if(is.element(model,c("OM"))){
+          final <- list(NA,NA,1,NA,NA)
+          names(final) <- c("MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+        }
+        final
+      }else{
+        if(is.element(model,c("OM"))){
+          N <- N-n_0
+          n_0 <-0
+        }
+        if(n_0==0){
+          if(sum(N_k)==N){
+            final <- list(0,0,1,N_k/N,NA,NA)
+            names(final) <- c("probability of lineages remain undetected", "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+            if(is.element(model,c("OM"))){
+              final <- list(0,1,N_k/N,NA,NA)
+              names(final) <- c( "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+            }
+            final
+          }else if(min(N-N_k)==0){
+            final <- list(0,Inf,Inf,NA,NA,NA)
+            names(final) <- c("probability of lineages remain undetected", "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+            if(is.element(model,c("OM"))){
+              final <- list(Inf,Inf,NA,NA,NA)
+              names(final) <- c("MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+            }
+            final
+          }else{
+           
+            final <- MLE1(N, N_k, n_0, model, lambda_initial, eps_initial)
+            final
+          }
+        }else{ #n_0>0
+          if(prod(1-N_k/N)<=n_0/N){
+            final <- list(min(1-N_k/N),Inf,Inf,NA,NA,NA)
+            names(final) <- c("probability of lineages remain undetected", "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+            if(is.element(model,c("OM"))){
+               final <- list(Inf,Inf,NA,NA,NA)
+               names(final) <- c("MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+            }
+            final
+          }else if(prod(1-N_k/N)>n_0/N){
+            if(sum(N_k)==N-n_0){
+              final <- list(n_0/N,0,1,NA,NA,NA)
+              names(final) <- c("probability of lineages remain undetected", "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+#              if(is.element(model,c("OM"))){
+#                final <- list(0,1,N_k/N,NA,NA)
+#                names(final) <- c( "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+#              }
+              final
+            }else{
+               final <- MLE1(N, N_k, n_0, model, lambda_initial, eps_initial)
+               final
+            }
+          }
+        }
+      }
+    }
+  }
+}  
+
+
+#---------------------------------internal function-------------------------------
+
+MLE1 <- function(N, N_k, n_0=0, model = "IDM", lambda_initial = 1, eps_initial=0.1){
+  if(model == "OM"){
+    if(n_0>0){
+      print(paste("Option model= `OM' neglects n_0=",n_0," samples and adjusts sample size to N=",N-n_0,sep=""))
+    }
+    MLE_OM(N-n_0,N_k,lambda_initial)
+  }else if(model == "IDM"){
+    if(n_0>0){
+      MLE_IDM(N, N_k,n_0,lambda_initial, eps_initial)
+    }else{
+      inp <- MLE_OM(N-n_0,N_k,lambda_initial)
+      FI <- inp[[4]]
+      n <- length(inp[[3]])
+      FInf <- array(NA,c(n+2,n+2))
+      pick <- c(TRUE,FALSE,rep(TRUE,n))
+      #print(pick)
+      FInf[pick,pick] <- inp[[4]]
+      nam <-c("lam","eps",paste("p",1:n,sep="."))
+      colnames(FInf) <- nam
+      rownames(FInf) <- nam
+      
+      lam <- inp[[1]]
+      el <- exp(lam)
+      adj <- el*(el-lam-1)/(el-1)^2
+      FInfadj <- FInf
+      FInfadj[1,] <- FInf[1,]*adj
+      FInfadj[,1] <-  FInf[,1]*adj
+      nam <-c("psi","eps",paste("p",1:n,sep="."))
+      colnames(FInfadj) <- nam
+      rownames(FInfadj) <- nam
+
+      final <- list(0,inp[[1]],inp[[2]],inp[[3]],FInf,FInfadj)
+      names(final) <- c("probability of lineages remain undetected", "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+      final
+    }
+        
+  }else{
+    warning("option model needs to be eiter `IDM' or `OM'")
+  }
+}  
+
+################################ The MLE of the IDM #################################
+
+#' The EM algorithm to derive the MLE for the IDM
+#'
+#' @param N integer-valued float; Sample size
+#' @param n0 integer-valued float; number of empty records
+#' @param Nk float vector integer valued;each component corresponds to the number of
+#'   times a lineage is found in the dataset
+#' @param lambda_initial float; initial value of lambda
+#' @param eps_initial float; initial value of epsilon (probability of the
+#'   lineages remain undetected)
+#'
+#' @return the function returns a list of values as follows:
+#'         1) the MLE of the probability of lineages remaining undetected (epsilon);
+#'         2) the MLE of the MOI parameter (lambda);
+#'         3) the MLE of the average MOI (psi);
+#'         4) the MLE of the lineage frequencies;
+#'         5) the inverse Fisher information evaluated at the LME.
+#'
+#' @examples MLE_IDM(40, 1, c(23,27), 1, 0.1)
+MLE_IDM <- function(N, Nk,n0, lambda_initial, eps_initial) {
+  thr1 <- 10^-8
+  thr2 <- 10^-12
+  thr3 <- 10^-20
+  z <- Nk
+  sel <- Nk!=0
+  Nk <- Nk[sel]
+  n <- length(Nk)
+  Nnk <- N - Nk
+  snk <- sum(Nk)
+  #initial values
+  lamt <- 0.1
+  lamnext <- lambda_initial
+  pkt <- as.vector(array(1/n,c(1,n))) + 0.1
+  pnext <- as.vector(array(1/n,c(1,n)))
+  epst <- 0.01
+  epsnext <- eps_initial 
+  while(abs(lamt - lamnext) +abs(epst - epsnext) + sqrt(sum((pkt - pnext)^2)) > thr1) {
+    lamt <- lamnext
+    epst <- epsnext
+    pkt <- pnext
+    nextiter <- EM_next_iteration(lamnext, pnext, epst, N, n0, Nk, Nnk, snk)
+    pnext <- nextiter[[1]]
+    epsnext<- nextiter[[2]] 
+    wt <- nextiter[[3]]
+    ntt <- wt/N
+    lamnext <-  ntt + 1
+    lamnext <- EM_lambda_Newton(lamnext, N, thr1, ntt)
+  }
+  
+  pnextz <- array(0,length(z))  
+  pnextz[z > 0] <- pnext 
+  psi <- lamnext/(1-exp(-lamnext))
+  pp <- array(0,length(sel))
+
+  pick <-c( TRUE,epsnext>0, sel)
+  FI <- FI(N,lamnext,pnext,epsnext)
+  pick <-c( TRUE,TRUE, sel)
+  n <- length(sel)
+  FInf <- array(NA,c(n+2,n+2))
+  FInf[pick,pick] <- FI
+  nam <-c("lam","eps",paste("p",1:n,sep="."))
+  colnames(FInf) <- nam
+  rownames(FInf) <- nam
+
+  
+  
+  lam <- lamnext
+  el <- exp(lam)
+  adj <- el*(el-lam-1)/(el-1)^2
+  FInfadj <- FInf
+  FInfadj[1,] <- FInf[1,]*adj
+  FInfadj[,1] <-  FInf[,1]*adj
+  nam <-c("psi","eps",paste("p",1:n,sep="."))
+  colnames(FInfadj) <- nam
+  rownames(FInfadj) <- nam
+
+  final <- list(epsnext, lamnext, psi, pnextz,FInf,FInfadj)
+  names(final) <- c("probability of lineages remain undetected", "MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+  final
+}
+
+#---------------------------------internal function-------------------------------
+
+EM_lambda_Newton <- function(initial, N, thr, ntt) {
+  lamt <- 0
+  lamnext <- initial
+  while (abs(lamt - lamnext) > thr) {
+    lamt <- lamnext
+    exp_l <- 1 - exp(-lamt)
+    newt <- 1 - exp(-lamt)*ntt
+    lamnext <- (ntt*(1 - exp(-lamt)*(1 + lamt)))/newt 
+  }
+  
+  lamnext
+}
+
+#---------------------------------internal function-------------------------------
+
+
+EM_next_iteration <- function (lamnext, pkt, epst, N, N0, Nk, Nnk, snk) {
+  #prereuisite
+  expt <- exp(lamnext*pkt)
+  exp1t <- expt - 1
+  exp1expt <- expt/exp1t
+  expepst <- epst*exp1t + 1
+  if (N0 > 0) {
+    tt <- N0/(-1 + prod(expepst))
+  }
+  else {
+    tt <- 0
+  }
+  
+  exp2epst <- expt/expepst
+  
+  wt <- lamnext*( sum(pkt*(Nk*exp1expt + Nnk*epst*exp2epst)) 
+                  + epst*tt*sum(pkt*exp2epst))
+  exp1e <- exp1t/expepst
+  vkt <- Nnk*exp1e
+  vt <- epst*(sum(vkt) + sum(exp1e)*tt)
+  ukt <- pkt*lamnext*(Nk*exp1expt + epst*exp2epst*(Nnk + tt))
+  #next iteration
+  pnext <- ukt/sum(ukt)
+  epsnext <- 1/(1 + (snk/vt))
+  list(pnext, epsnext, wt)
+}
+
+
+#---------------------------------internal function-------------------------------
+
+#' The EM algorithm to derive the MLE for the IDM
+#'
+#' @param N integer-valued ; Sample size
+#' @param lam float; MOI parameter
+#' @param p float vector; vector of lineage frequencies
+#' @param eps float; probability of the lineages remain undetected, default eps=0
+#'
+#' @return the inverse Fisher information matrix
+#'
+#' @examples FI(100, 1.1, c(0.5,0.45,0.05), 0.1)
+#' 
+FI <- function (N,lam,p,eps=0) {
+  #prerequisite
+  n <-length(p)
+  if(eps==0){
+    FI <- array(0,c(n+2,n+2))
+    iFI <- array(0,c(n+2,n+2))
+    el <- exp(lam)
+    eml <-1/el
+    elk <- exp(lam*p)
+    eplkmo <- (elk-1)
+    
+    
+    ## d^2L/dl^2
+    FI[1,1] <- -1/(1-eml)+el*sum( p^2/eplkmo)
+    
+    ## d^2L/dldpk
+    
+    FI[1,1:n+2] <- - el*(1- p/eplkmo*lam )
+    FI[1:n+2,1] <- FI[1,1:n+2]
+    
+    ## d^2L/dpk^2
+    
+    D <- (el*lam^2/eplkmo)
+    #FI <- FI + diag(c(0,0,D ))
+    
+    FI <- N/(el-1)*FI
+    FI[1:n+2,2] <- 1
+    FI[2,1:n+2] <- FI[1:n+2,2] 
+    
+     ## use blockwise inverision
+    D <- N/(el-1)*D
+    D1 <- 1/D
+    d <- -sum(D1)
+    D2 <- c(-1,D1)
+    D3 <- (D2%*%t(D2))/d + diag(c(0,D1))
+    
+    A0 <-FI[1,1]
+    B <- FI[1,2:(n+2)]
+    A1 <- FI[1:n+2,1:n+2]
+    DC <- D3 %*% B
+    A1 <- solve(A0 - (B %*% DC))
+    
+    iFI[1,1] <- A1
+    C2 <-  -DC %*% A1 
+    iFI[0:n+2,1] <- C2
+    B2 <- t(C2)
+    iFI[1,0:n+2] <- B2
+    iFI[0:n+2,0:n+2] <- D3 - DC %*% B2 
+    iFI <- iFI[-2,-2]
+    
+  }else{
+    FI <- array(0,c(n+3,n+3))
+    iFI <- array(0,c(n+3,n+3))
+    el <- exp(lam)
+    eml <-1/el
+    elk <- exp(lam*p)
+    Ak <- (elk-1)*eps +1
+    tau <- prod(Ak)
+    tau <- tau/(tau-1)
+    pkAk <- t(p/Ak)
+    eplkmo <- (elk-1)
+    eplmoAl <- t(eplkmo/Ak)
+    Tl <- eps * p * elk /Ak
+    Te <- eplkmo/Ak
+    Tp <- eps*lam*elk/Ak
+    ## d^2L/dl^2
+    FI[1,1] <- -1/(1-eml)+(1-eps)*el*(pkAk%*% (p/eplkmo)) + tau*sum(Tl)^2
+    
+    ## d^2L/dlde
+    FI[1,2] <- -el*sum(pkAk)  + tau * sum(Tl)*sum(Te)
+    FI[2,1] <- FI[1,2]
+    
+    ## d^2L/dldpk
+    
+    FI[1,1:n+3] <- - el*( 1- pkAk/eplkmo*lam*(1-eps) ) + tau * Tp *sum(Tl)
+    FI[1:n+3,1] <- FI[1,1:n+3]
+    
+    ## d^2L/deps^2
+    
+    FI[2,2] <- el*sum(eplmoAl)/(1-eps)  + tau*sum(Te)^2
+    
+    ## d^2L/depsdpk
+    
+    FI[2,1:n+3] <- - el*lam/Ak  + tau*sum(Te) * Tp
+    FI[1:n+3,2] <- FI[2,1:n+3]
+
+    ## d^2L/dpk^2
+    
+    D <- (el*(1-eps)*lam^2/Ak/eplkmo + tau *  Tp^2)
+    FI <- FI + diag(c(0,0,0,D ))
+    
+    ## use blockwise inverision
+    FI <- N/(el-1)*FI
+    
+    D <- N/(el-1)*D
+    D1 <- 1/D
+    d <- -sum(D1)
+    D2 <- c(-1,D1)
+    D3 <- (D2%*%t(D2))/d + diag(c(0,D1))
+    
+    A0 <-FI[1:2,1:2]
+    B <- FI[1:2,3:(n+3)]
+    A1 <- FI[1:n+3,1:n+3]
+    DC <- D3 %*% t(B)
+    A1 <- solve(A0 - (B %*% DC))
+    
+    iFI[1:2,1:2] <- A1
+    C2 <- - DC %*% A1 
+    iFI[0:n+3,1:2] <- C2
+    B2 <- t(C2)
+    iFI[1:2,0:n+3] <- B2
+    iFI[0:n+3,0:n+3] <- D3 - DC %*% B2 
+    iFI <- iFI[-3,-3]
+  }
+  iFI
+}
+
+################################ The MLE of the OM #################################
+
+#' function to derive the MLE for the original model
+#'
+#' @param N integer; Sample size
+#' @param Nk vector of integers;each component corresponds to the number of
+#'   times a lineage is found in the dataset
+#' @param la float; initial value of lambda
+#'
+#' @return the function returns a list of values as follows: 1) the MLE of the
+#'   MOI parameter (lambda) 2) the MLE of the average MOI (psi) 3) the MLE of
+#'   the lineage frequencies
+#' @export
+#'
+#' @examples MLE(97,c(22,25,49,32,18))
+MLE_OM <- function(N,Nk,la=1){
+  sel <- Nk
+  Nk <- sel[sel>0]
+  nk <- Nk/N
+  l1 <- 2.5         # initial value
+  l0 <- 0
+  eps <- 10^(-8)       # precision 
+  k <- 1
+  while(abs(l0-l1)>eps && k<50 && l1>0){
+    k <- k+1
+    l0 <- l1
+    l1 <- l0-(l0+sum(log(1-nk*(1-exp(-l0)))))/(1-sum(nk/(exp(l0)*(1-nk)+nk)))
+  }
+  if(k==50 || l1<0){
+    for(st in 1:10){
+      l1 <- st
+      l0 <- l1+1
+      k <- 1
+      while(abs(l0-l1)>eps && k<100 && l1>0){
+        k <- k+1
+        l0 <- l1
+        l1 <- l0-(l0+sum(log(1-nk*(1-exp(-l0)))))/(1-sum(nk/(exp(l0)*(1-nk)+nk)))
+      }
+      if(abs(l0-l1)<eps){
+        break
+      }
+    }
+    if(abs(l0-l1)>eps){
+      l1 <- Rmpfr::mpfr(10*la,precBits=100)
+      l0 <- l1+1
+      while(abs(l0-l1)>eps){
+        l0 <- l1
+        l1=l0-(l0+sum(log(1-nk*(1-exp(-l0)))))/(1-sum(nk/(exp(l0)*(1-nk)+nk)))
+      }
+    }        
+  }
+  pk <- -1/l1*log(1-nk*(1-exp(-l1))) 
+  n <- length(sel)
+  pk1 <- array(0,n)
+  pick <- sel>0
+  pk1[pick] <- pk  
+  psi <- l1/(1-exp(-l1))
+  
+  FI <- FI(N,l1,pk,0)
+  pick <-c( TRUE, pick)
+  FInf <- array(NA,c(n+1,n+1))
+  FInf[pick,pick] <- FI
+  nam <-c("lam",paste("p",1:n,sep="."))
+  colnames(FInf) <- nam
+  rownames(FInf) <- nam
+  
+  lam <- l1
+  el <- exp(lam)
+  adj <- el*(el-lam-1)/(el-1)^2
+  FInfadj <- FInf
+  FInfadj[1,] <- FInf[1,]*adj
+  FInfadj[,1] <-  FInf[,1]*adj
+  nam <-c("psi",paste("p",1:n,sep="."))
+  colnames(FInfadj) <- nam
+  rownames(FInfadj) <- nam
+
+  
+  out <- list(l1,psi,pk1,FInf,FInfadj)
+  names(out) <- c("MOI parameter lambda","average MOI","lineage frequencies","inverse Fisher information","inverse Fisher information adjusted for average MOI")
+  out	
+}
+
+
+########################################################################################
+#------------------------- Functions for the simulation study --------------------------
+########################################################################################
+
+####################################### cpoiss #########################################
+
+#' Generates conditional Poisson random numbers
+#'
+#' @param lambda float; the MOI parameter
+#' @param N integer; the sample size 
+#'
+#' @return a vector of randomly generated conditional Poisson numbers
+#'
+#' @examples  cpoiss(1.5, 10)
+#' 
+cpoiss<-function(lambda,N){
+  m <- 100 # to accelerate computation it is assumed that m<100 is generically drawn
+  out <- rep(0,N)
+  x <- runif(N,min=0,max=1)
+  p0 <- ppois(0,lambda)
+  nc <- 1/(1-exp(-lambda))
+  pvec <- (ppois(1:m,lambda)-p0)*nc
+  pvec <- c(pvec,1) 
+  for (i in 1:N){
+    k <- 1
+    while(x[i] > pvec[k]){
+      k <- k+1
+    }
+    if(k==m){ # if a m>=100 is drawn this is executed
+      k <- k+1
+      a <- dpois(k,lambda)*nc
+      b <- pvec[m]+a
+      while(x[i]>b){
+        k <- k+1
+        a <- a*lambda/k
+        b <- b+a
+      }
+    }
+    out[i] <- k
+  }
+  out
+}
+
+####################################### mnom #########################################
+
+#' Generates molecular dataset for a given set of model parameters
+#'
+#' @param M either a positive integer or a vector of positive integers
+#'   corresponding to conditional Poisson random numbers
+#' @param p vector; vector of lineage frequencies
+#'
+#' @return a 0-1 matrix of size N x n where each row corresponds to a sample
+#'   with
+#'
+#' @examples 
+#'  mnom(8, c(0.25,0.25,0.25,0.25))
+#'  
+#'  mnom(c(8,5,6), c(0.25,0.25,0.25,0.25))
+#' 
+mnom <- function(M, p){
+  N <- length(M)
+  out<-matrix(0, N, length(p))
+  for(k in 1:N){
+    out[k,] <- rmultinom(1,M[k],p)
+  }
+  out <- out
+  out
+}
+
+
+####################################### runsim #########################################
+
+#' Generates a molecular dataset with incomplete information 
+#'
+#' @param data matrix; a 0-1 matrix corresponding to N blood samples 
+#' @param eps float; the probability of lineages remaining undetected
+#' @param N integer; sample size
+#' @param n integer; number of lineages
+#'
+#' @return a list with the following values:
+#'            1) number of empty records
+#'            2) the vector of observed prevalences
+#'            3) dataset with incomplete information
+#'
+#' @examples
+IncompleteData <- function(data, eps){
+  N <- nrow(data)
+  n <- ncol(data)
+  ran <- runif(N*n)
+  ran <- matrix((ran > eps)*1, N, n)
+  ran*data
+}
+
+```
+
+````{r, include=FALSE}
+library(knitr)
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  #more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- head(x, lines) #c(head(x, lines), more)
+    }
+  } else {
+    x <- x[lines] # c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```` 
+
+### Availability and updates
+The R-file "MOI-MLE-IDM.R" is also available via GitHub. Updates of the code and this description will be made available there [https://github.com/Maths-against-Malaria/MOI---Incomplete-Data-Model.git](https://github.com/Maths-against-Malaria/MOI---Incomplete-Data-Model.git). The R-code and description are extensions of those described in [Schneider (2018)](https://doi.org/10.1371/journal.pone.0194148), which is available in an updated version on GitHub [https://github.com/Maths-against-Malaria/Maximum-likelihood-estimate-MOI-and-lineage-frequency-distribution.git](https://github.com/Maths-against-Malaria/Maximum-likelihood-estimate-MOI-and-lineage-frequency-distribution.git).
+
+### The maximum-likelihood Estimates (MLE)
+All functions needed to calculate the MLE of MOI and lineage frequencies from molecular datasets based on the original model (OM) and the incomplete-data model (IDM) are described here. 
+
+The first step is to load the R-file "MOI-MLE-IDM.R". The second step is to is to import the data using the function `DatImp`. The third step is to calculate sample size and the prevalence counts for all lineages using the function `Nk`. The final step is to derive the MLE based on the OM or IDM using the function `MLE`.
+
+#### Loading the R-file.
+Save the R-file "MOI-MLE-IDM.R" in a directory `path` and load it using the function `source`. E.g., if the file is stored in  source `"C:/Documents/backslash/Musterfrau"`, the file is loaded by running the following line.
+
+```{r, eval=FALSE}
+source("C:/Documents/backslash/Musterfrau/MOI-MLE-IDM.R")
+```
+
+#### Importing data using `DatImp`.
+Import molecular data using the function `DatImp(path)`. Here, `path` is the location where the molecular dataset is stored. Data needs to be stored in a standardized fashion (see section [Data format](datform)) as either an ".xlsx"-, ".csv"- or ".txt"-file. If the data is stored in an ".xls"-file, it has to be converted into an ".xlsx"-file with appropriate spreadsheet software. 
+
+
+__Code Example.__ The following code imports the file "STR.xlsx" (see additional files), which is stored in "C:/Documents/backslash/Molecular Data/STR.xlsx". Only the first 10 lines of output are shown. 
+```{r, eval=FALSE}
+path <- "C:/Documents/backslash/Molecular Data/STR.xlsx"
+
+```
+```{r, include=FALSE}
+path <- "/Users/kristanschneider/Library/CloudStorage/GoogleDrive-mathmalaria@gmail.com/.shortcut-targets-by-id/1Ulru-DjbFRaMVB7Vj9tJ4NfyzPDkhzOr/Maths against Malaria/Meraj/Missing Data/simulations/R/STR.xlsx"
+```
+```{r, output.lines=1:10}
+DatImp(path)
+```
+To read the data into an array named `dat` use the following code.
+
+```{r}
+dat <- DatImp(path)
+```
+
+#### Data format. {#datform}
+Molecular data needs to be stored either as ".xlsx"-, ".csv"- or ".txt"-file in a specific format. Examples are provided as additional files. The format for ".xlsx"-files is described. A data set consists of two columns.  The first contains the sample IDs, the second molecular information from samples. Each sample is stored in a $2\times k$ block. In the first column at least the first row must contain the sample ID. The lineages present in the sample are stored in the second column in consecutive rows in any arbitrary order. Below are four alternative schematic descriptions of a sample in which lineages 1, 2 and 4 were observed. Note that missing values can occur, that the same lineage might be entered multiple times for a sample (but it is counted only once) and that the sample ID has to occur only in the first row. Missing values must be left empty. Examples:
+
+```{=latex}
+\begin{center}
+\begin{tabular}{|c|c|}
+\hline
+ID1 & lineage 2\\\hline
+      &  lineage 4\\\hline
+      & lineage 1\\\hline
+\end{tabular}\quad\quad
+\begin{tabular}{|c|c|}
+\hline
+ID1 & lineage 1\\\hline
+ID1      &  lineage 2\\\hline
+      & lineage 4\\\hline
+\end{tabular}\quad\quad
+\begin{tabular}{|c|c|}
+\hline
+ID1 & lineage 1\\\hline
+      &  lineage 2\\\hline
+      & lineage 4\\\hline
+      & lineage 4\\\hline
+\end{tabular}\quad\quad
+\begin{tabular}{|c|c|}
+\hline
+ID1 & lineage 1\\\hline
+      &  lineage 2\\\hline
+      &  lineage 4\\\hline
+      &  \\\hline
+ID1   & lineage 4\\\hline
+\end{tabular}
+\end{center}
+```
+
+Sample IDs and lineages are entered as numbers or strings. See the additional file "STR.xlsx" for an example of microsatellite data and "SNP.xlsx"  for SNP data. The first row is reserved for column labels. It can be left empty, but this row must not be omitted. The table below shows the first 10 rows of the example data set STR.xlsx, corresponding to the first  6 samples.
+```{r, output.lines=1:11}
+dat
+```
+
+The first sample (MCP001) contains two lineages, "132" and "144". (The numbers corresponding to repeat lengths of the STR). The second sample (MCP002) lineages "132", "126"-  Sample MCP003 contains the lineages "144" and "180". Note that the sample ID is entered in both rows for sample  MCP003 but only in the first row for samples MCP001 and MCP002. Sample MCP004 is an empty record. Sample MCP005 contains only lineage "144", and sample MCP006 only lineage "132". However, sample MCP006 is  entered in an awkward way.
+
+If the data is stored as a ".txt"-file, columns have to be separated by a tab stop. If it is entered as a ".csv" file, columns have to be separated by a semicolon (examples are found as additional files).
+
+
+#### Frequency counts using the function `Nk`.
+The function  `Nk(dat)` takes a $2\times s$ array containing the molecular data and yields sample size (including the empty records), lineage-frequency counts, and the number of empty records as a list object. The first list element is the sample size $N$, the second a matrix with the frequency counts $N_1,\ldots, N_n$, and the third is the number of empty records $n_{\pmb 0}$. The column names of the matrix are the respective lineages.
+
+__Code example.__ The following code takes the array `dat` corresponding to the sample data set "STR.xlsx" (see additional files) and calculates sample size, lineage frequency counts, and the number of empty records.
+
+```{r}
+Nk(dat)
+```
+
+The data contains $N=99$ samples. Five different STR repeats (lineages) are found in the data, namely, 126, 132, 144, 150, and 180. Their respective counts are $N_1=22$, $N_2=25$, $N_3=49$, $N_4=32$, and $N_5=18$. Two of samples (MCP004 and MCP008) are empty records, i.e., the number of  empty records is  $n_{\pmb 0} = 2$.
+
+#### The function `MLE`.
+The function `MLE(N, N_k, n_0 = 0, model = "IDM", lambda_initial = 1, eps_initial = 0.1)` calculates the maximum likelihood estimate (MLE) $(\hat \lambda, \hat p_1,\ldots, \hat p_n)$ from the data $N$, $(N_1,\ldots, N_n)$, and $n_{\pmb 0}$ based on the IDM or OM. Note that the number of empty records, $n_{\pmb 0}$,  is an optional argument (default `n_0 = 0`), which should be specified only if the data contains empty records. The function has the following optional arguments. The argument "model" specifies whether the IDM (`model = 'IDM'`; default), or the original model (`model = 'OM'`) is used. If the option is set to `model = 'OM'` the argument $n_{\pmb 0}$ can be omitted. A further argument is `lambda_initial` (default `lambda_initial = 1`),  the initial value for the numerical iteration to find the estimate $\hat \lambda$. The default value can be changed to optimize computational time. Unless numerical problem occur, the default parameter should be used. Similarly, the argument `eps_initial` (default `eps_initial = 0.1`) specifies the initial value in the numerical iteration to find $\hat\varepsilon$.
+
+
+The output is a list containing six elements: (1) the MLE of the probability of lineages being undetected $\hat\varepsilon$,
+ (2) the MLE $\hat \lambda$ of MOI parameter, (3) the MLE of the average MOI $\hat \psi$, (4) the estimated frequencies $(\hat p_1,\ldots, \hat p_n)$,  (5) the inverse Fisher information estimated at the MLE, which is an estimate for the covariance of the estimator, and (6) the inverse Fisher information adjusted for the average MOI, i.e., the covariance matrix for the parameters $(\hat \psi,\hat\varepsilon, \hat p_1,\ldots, \hat p_n)$. The first list element is omitted if `model = 'OM'`. (Note the inverse Fisher information and the inverse observed information coincide if evaluated at the MLE.)
+ 
+ 
+ 
+
+__Code example.__ This code calculates the MLE for data consisting of $N=99$ samples with frequency counts $N_1=22$, $N_2=25$, $N_3=49$, $N_4=32$, and $N_5=18$, as well as $n_{\pmb 0} = 2$ empty records.
+
+```{r}
+MLE(99, c(22,25,49,32,18), n_0 = 2)
+```
+The resulting estimates are $\hat \varepsilon = 0.03411416$, $\hat \lambda=1.269117$, $\hat \psi = 1.76531$, $\hat p_1=0.1424659$, $\hat p_2=0.1640532$,  $\hat p_3=0.3620580$, $\hat p_4=02168498$,  and $\hat p_5=0.1145731$.
+
+__Code example.__ The above example corresponded to the data "STR.xlsx". The following two lines are an alternative   syntax to calculate the MLE.  
+```{r}
+nk <- Nk(dat)
+MLE(nk[[1]], nk[[2]], nk[[3]], model = "IDM")
+```
+
+
+
+__Code example.__ This code calculates the MLE for the data "STR.xlsx" from the above examples using the original model. 
+```{r}
+MLE(99, c(22,25,49,32,18), n_0 = 2, model = "OM")
+```
+Here, $\hat \lambda=1.218736$, $\hat \psi = 1.730185$, $\hat p_1=0.1428264$, $\hat p_2=0.1643813$,  $\hat p_3=0.3608585$, $\hat p_4=0.2169937$,  and $\hat p_5=0.1149401$.
+
+An alternative syntax are the following two lines.
+```{r}
+nk <- Nk(dat)
+MLE(nk[[1]], nk[[2]], nk[[3]], model = "OM")
+```
+
+
+The same output is produced by the following code, which omits the number of empty records $n_{\pmb 0}$, and adjusts the sample size.
+```{r}
+MLE(97, c(22,25,49,32,18), model = "OM")
+```
+
+
+
+
+
+### Simulations to ascertain precision and accuracy goals
+#### The function `cpoiss`.
+The function `cpoiss(lambda, n)` generates $n$ random numbers from a conditional poisson distribution with parameter $\lambda$.
+
+__Code example.__ This code generates 10 random numbers from a conditional Poisson distribution with parameter $\lambda=1.5$.
+
+```{r}
+cpoiss(1.5, 10)
+```
+
+#### The function `mnom`. 
+The function `mnom(M, p)` generates a random vector $(m_1, \ldots, m_n)$ from a multinomial distribution with parameters `M` and `p <- c(p_1,...,p_n)`. The argument `M` is either a positive integer or a vector of positive integers,  $M=(M_1,\ldots,M_k)$, in which case the output is a $k\times n$ matrix, where the $i$th row $(m_{i1},\ldots,m_{in})$ follows a multinomial distribution with parameters $M_i$ and $\pmb p$. 
+
+__Code example.__ This code generates a multinomial random vector with parameters $M=8$ and $\pmb p=(\frac 14,\frac 14,\frac 14,\frac 14)$.
+```{r}
+mnom(8,c(0.25,0.25,0.25,0.25))
+```
+__Code example.__ This code generates a multinomial random vector with parameters $M=(8,5,6)$ and $\pmb p=(\frac 14,\frac 14,\frac 14,\frac 14)$.
+
+```{r}
+mnom(c(8,5,6),c(0.25,0.25,0.25,0.25))
+```
+
+#### Simulating a data set with complete information.
+A sample corresponds to a $0-1$ vector of length $n$ indicating the absence and presence of $n$ possible lineages in the sample. A dataset of sample size $N$ is an  $N\times n$ matrix with entries $0$ and $1$. Each row corresponds to one sample. A data set is generated using the functions `cpoiss`, `mnom`, and `sign`.  
+
+__Code example.__ This code generates a data set of $N=10$ samples, assuming that MOI follows a conditional Poisson distribution with parameter $\lambda=1.5$ and lineage frequency distribution $\pmb p=(\frac 14,\frac 14,\frac 14,\frac 14)$, and stores it as `sim.dat`. An output of this data set is then generated.  
+
+```{r}
+sim.dat <- sign(mnom(cpoiss(1.5,10),c(0.25,0.25,0.25,0.25)))
+sim.dat
+```
+#### The function `IncompleteData`.
+To incorporate incomplete information into simulated data, the function  `IncompleteData(data, eps)` can be applied to a dataset with complete information ($0-1$-matrix of dimension $N\times n$). The first argument specifies the data set, the second argument the probability of lineages remaining undetected. The output is a modified data set ($0-1$-matrix of dimension $N\times n$), in which some lineages might remain undetected. 
+
+__Code example.__ This code modifies the dataset `sim.dat`generated in the previous example assuming that the probability of a lineage to remain undetected in a sample is $\varepsilon = 0.15$.  
+
+```{r}
+IncompleteData(sim.dat, 0.15) 
+```
+
+
+
+
+
