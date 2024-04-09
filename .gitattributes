@@ -2,6 +2,7 @@
 *.java linguist-detectable=false
 *.python linguist-detectable=false 
 *.R linguist-detectable=true 
+*.Mathematica linguist-detectable=false 
 *.ipynb linguist-detectable=false
 *.js linguist-detectable=false
 *.html linguist-detectable=false  
